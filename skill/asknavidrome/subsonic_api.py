@@ -6,6 +6,8 @@ import secrets
 
 import libsonic
 
+from .matcher import names_match, query_variants
+
 
 class SubsonicConnection:
     """Class with methods to interact with Subsonic API compatible media servers
@@ -41,6 +43,63 @@ class SubsonicConnection:
                                         False)
 
         self.logger.debug('Connecting to Navidrome.....')
+
+    @staticmethod
+    def _as_list(value) -> list:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+
+        return [value]
+
+    @staticmethod
+    def _dedupe_results(results: list) -> list:
+        deduped_results = []
+        seen = set()
+
+        for result in results:
+            result_key = result.get('id') or repr(result)
+            if result_key not in seen:
+                seen.add(result_key)
+                deduped_results.append(result)
+
+        return deduped_results
+
+    def _search3_category(self, term: str, category: str) -> list:
+        result_dict = self.conn.search3(term)
+        search_results = result_dict.get('searchResult3') or {}
+
+        return self._as_list(search_results.get(category))
+
+    def _search3_with_voice_variants(self, term: str, category: str, name_key: str) -> Union[list, None]:
+        direct_results = self._search3_category(term, category)
+        if direct_results:
+            return direct_results
+
+        fallback_results = []
+        searched_terms = {str(term)}
+
+        for variant in query_variants(term):
+            if variant in searched_terms:
+                continue
+
+            searched_terms.add(variant)
+            variant_results = self._search3_category(variant, category)
+            fallback_results.extend([
+                result for result in variant_results
+                if names_match(term, result.get(name_key))
+            ])
+
+        deduped_results = self._dedupe_results(fallback_results)
+        if deduped_results:
+            self.logger.debug(
+                f'Voice variant search for {category} term: {term} found {len(deduped_results)} entries.'
+            )
+
+            return deduped_results
+
+        return None
 
     def ping(self) -> bool:
         """Ping a Subsonic API server
@@ -100,9 +159,17 @@ class SubsonicConnection:
         self.logger.debug('In function search_playlist()')
 
         playlist_dict = self.conn.getPlaylists()
+        playlists = self._as_list(playlist_dict.get('playlists', {}).get('playlist'))
 
         # Search the list of dictionaries for a playlist with a name that matches the search term
-        playlist_id_list = [item.get('id') for item in playlist_dict['playlists']['playlist'] if item.get('name').lower() == term.lower()]
+        playlist_id_list = [item.get('id') for item in playlists if item.get('name').lower() == term.lower()]
+
+        if len(playlist_id_list) == 0:
+            playlist_id_list = [
+                item.get('id')
+                for item in playlists
+                if any(names_match(variant, item.get('name')) for variant in query_variants(term))
+            ]
 
         if len(playlist_id_list) == 1:
             # We have matched the playlist return it
@@ -131,17 +198,13 @@ class SubsonicConnection:
 
         self.logger.debug('In function search_artist()')
 
-        result_dict = self.conn.search3(term)
+        artist_results = self._search3_with_voice_variants(term, 'artist', 'name')
 
-        if len(result_dict['searchResult3']) > 0:
-            # Results found
-            result_count = len(result_dict['searchResult3']['artist'])
-
+        if artist_results is not None:
+            result_count = len(artist_results)
             self.logger.debug(f'Searching artists for term: {term} found {result_count} entries.')
 
-            if result_count > 0:
-                # Results were found
-                return result_dict['searchResult3']['artist']
+            return artist_results
 
         # No results were found
         return None
@@ -156,17 +219,13 @@ class SubsonicConnection:
 
         self.logger.debug('In function search_album()')
 
-        result_dict = self.conn.search3(term)
+        album_results = self._search3_with_voice_variants(term, 'album', 'name')
 
-        if len(result_dict['searchResult3']) > 0:
-            # Results found
-            result_count = len(result_dict['searchResult3']['album'])
-
+        if album_results is not None:
+            result_count = len(album_results)
             self.logger.debug(f'Searching albums for term: {term} found {result_count} entries.')
 
-            if result_count > 0:
-                # Results were found
-                return result_dict['searchResult3']['album']
+            return album_results
 
         # No results were found
         return None
@@ -181,17 +240,13 @@ class SubsonicConnection:
 
         self.logger.debug('In function search_song()')
 
-        result_dict = self.conn.search3(term)
+        song_results = self._search3_with_voice_variants(term, 'song', 'title')
 
-        if len(result_dict['searchResult3']) > 0:
-            # Results found
-            result_count = len(result_dict['searchResult3']['song'])
-
+        if song_results is not None:
+            result_count = len(song_results)
             self.logger.debug(f'Searching songs for term: {term}, found {result_count} entries.')
 
-            if result_count > 0:
-                # Results were found
-                return result_dict['searchResult3']['song']
+            return song_results
 
         # No results were found
         return None

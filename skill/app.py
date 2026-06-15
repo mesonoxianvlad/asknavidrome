@@ -18,6 +18,7 @@ from flask_ask_sdk.skill_adapter import SkillAdapter
 import asknavidrome.subsonic_api as api
 import asknavidrome.media_queue as queue
 import asknavidrome.controller as controller
+from asknavidrome.matcher import names_match
 
 # Create web service
 app = Flask(__name__)
@@ -380,8 +381,12 @@ class NaviSonicPlayAlbumByArtist(AbstractRequestHandler):
                 artist_album_lookup = connection.albums_by_artist(artist_lookup[0].get('id'))
 
                 # Search the list of dictionaries for the requested album
-                # Strings are all converted to lower case to minimise matching errors
-                result = [album_result for album_result in artist_album_lookup if album_result.get('name').lower() == album.value.lower()]
+                # using the same voice-aware matching as the API search.
+                result = [
+                    album_result
+                    for album_result in artist_album_lookup
+                    if names_match(album.value, album_result.get('name'))
+                ]
 
                 if not result:
                     text = sanitise_speech_output(f"I couldn't find an album called {album.value} by {artist.value} in the collection.")
@@ -473,7 +478,11 @@ class NaviSonicPlaySongByArtist(AbstractRequestHandler):
             song_list = connection.search_song(song.value)
 
             # Search for song by given artist.
-            song_dets = [item.get('id') for item in song_list if item.get('artistId') == artist_id]
+            song_dets = [
+                item.get('id')
+                for item in (song_list or [])
+                if item.get('artistId') == artist_id and names_match(song.value, item.get('title'))
+            ]
 
             if not song_dets:
                 text = sanitise_speech_output(f"I couldn't find a song called {song.value} by {artist.value} in the collection.")
